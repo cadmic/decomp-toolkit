@@ -965,10 +965,10 @@ pub fn apply_modifiers(mut str: TypeString, modifiers: &[Modifier]) -> Result<Ty
             }
             Modifier::ReferenceTo => {
                 if !has_pointer && !str.suffix.is_empty() {
-                    str.prefix.push_str(" (&");
+                    str.prefix.push_str(" (*");
                     str.suffix.insert(0, ')');
                 } else {
-                    str.prefix.push_str(" &");
+                    str.prefix.push_str("*");
                 }
                 has_pointer = true;
             }
