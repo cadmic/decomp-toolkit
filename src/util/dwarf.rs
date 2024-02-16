@@ -1090,10 +1090,14 @@ fn array_type_string(
     Ok(out)
 }
 
+fn anon_identifier(key: u32) -> String {
+    format!("__anon_{:#X}", key)
+}
+
 fn type_identifier(name: &Option<String>, key: u32) -> String {
     match name {
         Some(name) => name.clone(),
-        None => format!("__anon_{:#X}", key),
+        None => anon_identifier(key),
     }
 }
 
@@ -1562,8 +1566,8 @@ pub fn struct_def_string(
     t: &StructureType,
 ) -> Result<String> {
     let mut out = match t.kind {
-        StructureKind::Struct => "struct".to_string(),
-        StructureKind::Class => "class".to_string(),
+        StructureKind::Struct => "typedef struct".to_string(),
+        StructureKind::Class => "typedef class".to_string(),
     };
     write!(out, " {}", type_identifier(&t.name, t.key))?;
     let mut wrote_base = false;
@@ -1664,8 +1668,7 @@ pub fn struct_def_string(
         out.push_str(&indent_all_by(indent, "};\n"));
         in_union -= 1;
     }
-    out.push('}');
-    out.push(';');
+    write!(out, "}} {};", anon_identifier(t.key))?;
     if let Some(byte_size) = t.byte_size {
         write!(out, " // size = {:#X}", byte_size)?;
     }
@@ -1674,17 +1677,17 @@ pub fn struct_def_string(
 
 pub fn enum_def_string(t: &EnumerationType) -> Result<String> {
     let mut out = String::new();
-    writeln!(out, "enum {} {{", type_identifier(&t.name, t.key))?;
+    writeln!(out, "typedef enum {} {{", type_identifier(&t.name, t.key))?;
     for member in t.members.iter() {
         writeln!(out, "    {} = {},", member.name, member.value)?;
     }
-    write!(out, "}};")?;
+    write!(out, "}} {};", anon_identifier(t.key))?;
     Ok(out)
 }
 
 pub fn union_def_string(info: &DwarfInfo, typedefs: &TypedefMap, t: &UnionType) -> Result<String> {
     let mut out = String::new();
-    writeln!(out, "union {} {{", type_identifier(&t.name, t.key))?;
+    writeln!(out, "typedef union {} {{", type_identifier(&t.name, t.key))?;
 
     let max_offset = t.members.iter().map(|m| m.offset).max().unwrap_or_default();
     let offset_len = format!("{:X}", max_offset).len();
@@ -1696,7 +1699,7 @@ pub fn union_def_string(info: &DwarfInfo, typedefs: &TypedefMap, t: &UnionType) 
         writeln!(var_out)?;
     }
     write!(out, "{}", indent_all_by(4, var_out))?;
-    write!(out, "}};")?;
+    write!(out, "}} {};", anon_identifier(t.key))?;
     Ok(out)
 }
 
