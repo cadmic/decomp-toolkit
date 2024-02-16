@@ -1312,15 +1312,32 @@ pub fn subroutine_def_string(
             } else {
                 write!(parameters, "{}{}", ts.prefix, ts.suffix)?;
             }
-            if let Some(location) = &parameter.location {
-                write!(parameters, " /* {} */", location)?;
-            }
         }
         if t.var_args {
             write!(parameters, ", ...")?;
         }
     }
     write!(out, "({}){} {{", parameters, rt.suffix)?;
+
+    if !t.parameters.is_empty() {
+        writeln!(out, "\n    // Parameters")?;
+        let mut param_out = String::new();
+        for parameter in &t.parameters {
+            let ts = type_string(info, typedefs, &parameter.kind, true)?;
+            write!(
+                param_out,
+                "// {} {}{};",
+                ts.prefix,
+                parameter.name.as_deref().unwrap_or_default(),
+                ts.suffix
+            )?;
+            if let Some(location) = &parameter.location {
+                write!(param_out, " // {}", location)?;
+            }
+            writeln!(param_out)?;
+        }
+        write!(out, "{}", indent_all_by(4, param_out))?;
+    }
 
     if !t.variables.is_empty() {
         writeln!(out, "\n    // Local variables")?;
