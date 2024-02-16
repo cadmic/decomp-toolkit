@@ -128,7 +128,6 @@ fn dump_debug_section(
                     writeln!(w, "*/")?;
                     writeln!(w)?;
                     writeln!(w, "#include \"types.h\"")?;
-                    writeln!(w)?;
 
                     let children = tag.children(&info.tags);
                     let mut typedefs = BTreeMap::<u32, Vec<u32>>::new();

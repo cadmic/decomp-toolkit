@@ -620,6 +620,7 @@ pub enum StructureKind {
 
 #[derive(Debug, Clone)]
 pub struct StructureType {
+    pub key: u32,
     pub kind: StructureKind,
     pub name: Option<String>,
     pub byte_size: Option<u32>,
@@ -651,6 +652,7 @@ pub struct EnumerationMember {
 
 #[derive(Debug, Clone)]
 pub struct EnumerationType {
+    pub key: u32,
     pub name: Option<String>,
     pub byte_size: u32,
     pub members: Vec<EnumerationMember>,
@@ -658,6 +660,7 @@ pub struct EnumerationType {
 
 #[derive(Debug, Clone)]
 pub struct UnionType {
+    pub key: u32,
     pub name: Option<String>,
     pub byte_size: u32,
     pub members: Vec<StructureMember>,
@@ -822,10 +825,8 @@ impl UserDefinedType {
     pub fn is_definition(&self) -> bool {
         match self {
             UserDefinedType::Array(_) | UserDefinedType::PtrToMember(_) => false,
-            UserDefinedType::Structure(t) => t.name.is_some(),
-            UserDefinedType::Enumeration(t) => t.name.is_some(),
-            UserDefinedType::Union(t) => t.name.is_some(),
             UserDefinedType::Subroutine(t) => t.name.is_some(),
+            _ => true,
         }
     }
 
@@ -1035,36 +1036,28 @@ fn array_type_string(
     Ok(out)
 }
 
+fn type_identifier(name: &Option<String>, key: u32) -> String {
+    match name {
+        Some(name) => name.clone(),
+        None => format!("__anon_0x{:X}", key),
+    }
+}
+
 fn structure_type_string(
-    info: &DwarfInfo,
-    typedefs: &TypedefMap,
+    _info: &DwarfInfo,
+    _typedefs: &TypedefMap,
     t: &StructureType,
     include_keyword: bool,
-    include_anonymous_def: bool,
+    _include_anonymous_def: bool,
 ) -> Result<TypeString> {
-    let prefix = if let Some(name) = t.name.as_ref() {
-        if name.starts_with('@') {
-            struct_def_string(info, typedefs, t)?
-        } else if include_keyword {
-            match t.kind {
-                StructureKind::Struct => format!("struct {}", name),
-                StructureKind::Class => format!("class {}", name),
-            }
-        } else {
-            name.clone()
-        }
-    } else if include_anonymous_def {
-        struct_def_string(info, typedefs, t)?
-    } else if include_keyword {
+    let name = type_identifier(&t.name, t.key);
+    let prefix = if include_keyword {
         match t.kind {
-            StructureKind::Struct => "struct [anonymous]".to_string(),
-            StructureKind::Class => "class [anonymous]".to_string(),
+            StructureKind::Struct => format!("struct {}", name),
+            StructureKind::Class => format!("class {}", name),
         }
     } else {
-        match t.kind {
-            StructureKind::Struct => "[anonymous struct]".to_string(),
-            StructureKind::Class => "[anonymous class]".to_string(),
-        }
+        name.clone()
     };
     Ok(TypeString { prefix, ..Default::default() })
 }
@@ -1074,48 +1067,22 @@ fn enumeration_type_string(
     _typedefs: &TypedefMap,
     t: &EnumerationType,
     include_keyword: bool,
-    include_anonymous_def: bool,
+    _include_anonymous_def: bool,
 ) -> Result<TypeString> {
-    let prefix = if let Some(name) = t.name.as_ref() {
-        if name.starts_with('@') {
-            enum_def_string(t)?
-        } else if include_keyword {
-            format!("enum {}", name)
-        } else {
-            name.clone()
-        }
-    } else if include_anonymous_def {
-        enum_def_string(t)?
-    } else if include_keyword {
-        "enum [anonymous]".to_string()
-    } else {
-        "[anonymous enum]".to_string()
-    };
+    let name = type_identifier(&t.name, t.key);
+    let prefix = if include_keyword { format!("enum {}", name) } else { name.clone() };
     Ok(TypeString { prefix, ..Default::default() })
 }
 
 fn union_type_string(
-    info: &DwarfInfo,
-    typedefs: &TypedefMap,
+    _info: &DwarfInfo,
+    _typedefs: &TypedefMap,
     t: &UnionType,
     include_keyword: bool,
-    include_anonymous_def: bool,
+    _include_anonymous_def: bool,
 ) -> Result<TypeString> {
-    let prefix = if let Some(name) = t.name.as_ref() {
-        if name.starts_with('@') {
-            union_def_string(info, typedefs, t)?
-        } else if include_keyword {
-            format!("union {}", name)
-        } else {
-            name.clone()
-        }
-    } else if include_anonymous_def {
-        union_def_string(info, typedefs, t)?
-    } else if include_keyword {
-        "union [anonymous]".to_string()
-    } else {
-        "[anonymous union]".to_string()
-    };
+    let name = type_identifier(&t.name, t.key);
+    let prefix = if include_keyword { format!("union {}", name) } else { name.clone() };
     Ok(TypeString { prefix, ..Default::default() })
 }
 
@@ -1524,13 +1491,7 @@ pub fn struct_def_string(
         StructureKind::Struct => "struct".to_string(),
         StructureKind::Class => "class".to_string(),
     };
-    if let Some(name) = t.name.as_ref() {
-        if name.starts_with('@') {
-            write!(out, " /* {} */", name)?;
-        } else {
-            write!(out, " {}", name)?;
-        }
-    }
+    write!(out, " {}", type_identifier(&t.name, t.key))?;
     let mut wrote_base = false;
     for base in &t.bases {
         if !wrote_base {
@@ -1634,16 +1595,8 @@ pub fn struct_def_string(
 }
 
 pub fn enum_def_string(t: &EnumerationType) -> Result<String> {
-    let mut out = match t.name.as_ref() {
-        Some(name) => {
-            if name.starts_with('@') {
-                format!("enum /* {} */ {{\n", name)
-            } else {
-                format!("enum {} {{\n", name)
-            }
-        }
-        None => "enum {\n".to_string(),
-    };
+    let mut out = String::new();
+    writeln!(out, "enum {} {{", type_identifier(&t.name, t.key))?;
     for member in t.members.iter() {
         writeln!(out, "    {} = {},", member.name, member.value)?;
     }
@@ -1652,16 +1605,8 @@ pub fn enum_def_string(t: &EnumerationType) -> Result<String> {
 }
 
 pub fn union_def_string(info: &DwarfInfo, typedefs: &TypedefMap, t: &UnionType) -> Result<String> {
-    let mut out = match t.name.as_ref() {
-        Some(name) => {
-            if name.starts_with('@') {
-                format!("union /* {} */ {{\n", name)
-            } else {
-                format!("union {} {{\n", name)
-            }
-        }
-        None => "union {\n".to_string(),
-    };
+    let mut out = String::new();
+    writeln!(out, "union {} {{", type_identifier(&t.name, t.key))?;
     let mut var_out = String::new();
     for member in t.members.iter() {
         let ts = type_string(info, typedefs, &member.kind, true)?;
@@ -1858,7 +1803,11 @@ fn process_structure_tag(info: &DwarfInfo, tag: &Tag) -> Result<StructureType> {
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(s)) => {
+                if !s.starts_with('@') {
+                    name = Some(s.clone());
+                }
+            }
             (AttributeKind::ByteSize, &AttributeValue::Data4(value)) => byte_size = Some(value),
             (AttributeKind::Member, &AttributeValue::Reference(_key)) => {
                 // Pointer to parent structure, ignore
@@ -1896,6 +1845,7 @@ fn process_structure_tag(info: &DwarfInfo, tag: &Tag) -> Result<StructureType> {
     }
 
     Ok(StructureType {
+        key: tag.key,
         kind: if tag.kind == TagKind::ClassType {
             StructureKind::Class
         } else {
@@ -1999,13 +1949,18 @@ fn process_array_subscript_data(data: &[u8], e: Endian) -> Result<(Type, Vec<Arr
 fn process_enumeration_tag(info: &DwarfInfo, tag: &Tag) -> Result<EnumerationType> {
     ensure!(tag.kind == TagKind::EnumerationType, "{:?} is not an EnumerationType tag", tag.kind);
 
+    let key = tag.key;
     let mut name = None;
     let mut byte_size = None;
     let mut members = Vec::new();
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(s)) => {
+                if !s.starts_with('@') {
+                    name = Some(s.clone());
+                }
+            }
             (AttributeKind::ByteSize, &AttributeValue::Data4(value)) => byte_size = Some(value),
             (AttributeKind::ElementList, AttributeValue::Block(data)) => {
                 let mut cursor = Cursor::new(data);
@@ -2027,18 +1982,23 @@ fn process_enumeration_tag(info: &DwarfInfo, tag: &Tag) -> Result<EnumerationTyp
 
     let byte_size =
         byte_size.ok_or_else(|| anyhow!("EnumerationType without ByteSize: {:?}", tag))?;
-    Ok(EnumerationType { name, byte_size, members })
+    Ok(EnumerationType { key, name, byte_size, members })
 }
 
 fn process_union_tag(info: &DwarfInfo, tag: &Tag) -> Result<UnionType> {
     ensure!(tag.kind == TagKind::UnionType, "{:?} is not a UnionType tag", tag.kind);
 
+    let key = tag.key;
     let mut name = None;
     let mut byte_size = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(s)) => {
+                if !s.starts_with('@') {
+                    name = Some(s.clone());
+                }
+            }
             (AttributeKind::ByteSize, &AttributeValue::Data4(value)) => byte_size = Some(value),
             (AttributeKind::Member, &AttributeValue::Reference(_key)) => {
                 // Pointer to parent structure, ignore
@@ -2067,7 +2027,7 @@ fn process_union_tag(info: &DwarfInfo, tag: &Tag) -> Result<UnionType> {
     }
 
     let byte_size = byte_size.ok_or_else(|| anyhow!("UnionType without ByteSize: {:?}", tag))?;
-    Ok(UnionType { name, byte_size, members })
+    Ok(UnionType { key, name, byte_size, members })
 }
 
 fn process_subroutine_tag(info: &DwarfInfo, tag: &Tag) -> Result<SubroutineType> {
