@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use indent::indent_all_by;
-use num_enum::{IntoPrimitive, TryFromPrimitive};
+use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 
 use crate::{
     array_ref,
@@ -151,16 +151,31 @@ impl FundType {
             FundType::Vec2x32Float => "__vec2x32float__",
         })
     }
+
+    pub fn parse_int(value: u16) -> Result<Self, TryFromPrimitiveError<Self>> {
+        if value >> 8 == 0x1 {  // Can appear in erased tags
+            Self::try_from(value & 0xFF)
+        } else {
+            Self::try_from(value)
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Modifier {
+    MwPointerTo = 0x00,  // Used in erased tags
     PointerTo = 0x01,
     ReferenceTo = 0x02,
     Const = 0x03,
     Volatile = 0x04,
     // User types
+}
+
+impl Modifier {
+    pub fn parse_int(value: u8) -> Result<Self, TryFromPrimitiveError<Self>> {
+        Self::try_from(value & 0x7F)  // High bit can appear in erased tags
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, IntoPrimitive, TryFromPrimitive)]
@@ -339,6 +354,8 @@ pub struct Attribute {
 pub struct Tag {
     pub key: u32,
     pub kind: TagKind,
+    pub is_erased: bool,
+    pub is_erased_parent: bool,
     pub attributes: Vec<Attribute>,
 }
 
@@ -421,7 +438,7 @@ impl Tag {
     pub fn children<'a>(&self, tags: &'a TagMap) -> Vec<&'a Tag> {
         let sibling = self.next_sibling(tags);
         let mut children = Vec::new();
-        let mut child = match self.next_tag(tags) {
+        let mut child = match self.next_tag(tags, self.is_erased) {
             Some(child) => child,
             None => return children,
         };
@@ -447,13 +464,13 @@ impl Tag {
         if let Some(key) = self.reference_attribute(AttributeKind::Sibling) {
             tags.get(&key)
         } else {
-            self.next_tag(tags)
+            self.next_tag(tags, self.is_erased)
         }
     }
 
-    /// Returns the next tag sequentially, if any
-    pub fn next_tag<'a>(&self, tags: &'a TagMap) -> Option<&'a Tag> {
-        tags.range(self.key + 1..).next().map(|(_, tag)| tag)
+    /// Returns the next tag sequentially, if any (skipping erased tags)
+    pub fn next_tag<'a>(&self, tags: &'a TagMap, include_erased: bool) -> Option<&'a Tag> {
+        tags.range(self.key + 1..).filter(|(_, tag)| include_erased || !tag.is_erased).next().map(|(_, tag)| tag)
     }
 }
 
@@ -472,8 +489,10 @@ where R: BufRead + Seek + ?Sized {
         if position >= len {
             break;
         }
-        let tag = read_tag(reader, e)?;
-        info.tags.insert(position as u32, tag);
+        let tags = read_tags(reader, e, false)?;
+        for tag in tags {
+            info.tags.insert(tag.key, tag);
+        }
     }
     Ok(info)
 }
@@ -508,8 +527,9 @@ where R: BufRead + Seek + ?Sized {
     Ok(())
 }
 
-fn read_tag<R>(reader: &mut R, e: Endian) -> Result<Tag>
+fn read_tags<R>(reader: &mut R, e: Endian, is_erased: bool) -> Result<Vec<Tag>>
 where R: BufRead + Seek + ?Sized {
+    let mut tags = Vec::new();
     let position = reader.stream_position()?;
     let size = u32::from_reader(reader, e)?;
     if size < 8 {
@@ -517,20 +537,54 @@ where R: BufRead + Seek + ?Sized {
         if size > 4 {
             reader.seek(SeekFrom::Current(size as i64 - 4))?;
         }
-        return Ok(Tag { key: position as u32, kind: TagKind::Padding, attributes: vec![] });
+        tags.push(Tag { key: position as u32, kind: TagKind::Padding, is_erased, is_erased_parent: false, attributes: Vec::new() });
+        return Ok(tags);
     }
 
     let tag_num = u16::from_reader(reader, e)?;
     let tag = TagKind::try_from(tag_num).context("Unknown DWARF tag type")?;
-    let mut attributes = Vec::new();
     if tag == TagKind::Padding {
-        reader.seek(SeekFrom::Start(position + size as u64))?; // Skip padding
+        // Erased entries that have become padding are little-endian, and we have
+        // to guess the length and tag of the first entry. We assume the entry is
+        // either a variable or a function, and read until we find the high_pc
+        // attribute. Only MwGlobalRef will follow, and these are unlikely to be
+        // confused with the length of the next entry.
+        let mut attributes = Vec::new();
+        let mut is_function = false;
+        while reader.stream_position()? < position + size as u64 {
+            // peek next two bytes
+            let mut buf = [0u8; 2];
+            reader.read_exact(&mut buf)?;
+            let attr_tag = u16::from_reader(&mut Cursor::new(&buf), Endian::Little)?;
+            reader.seek(SeekFrom::Current(-2))?;
+
+            if is_function && attr_tag != AttributeKind::MwGlobalRef as u16 {
+                break;
+            }
+
+            let attr = read_attribute(reader, Endian::Little)?;
+            if attr.kind == AttributeKind::HighPc {
+                is_function = true;
+            }
+            attributes.push(attr);
+        }
+        let kind = if is_function { TagKind::Subroutine } else { TagKind::LocalVariable };
+        tags.push(Tag { key: position as u32, kind, is_erased: true, is_erased_parent: true, attributes });
+
+        // Read the rest of the tags
+        while reader.stream_position()? < position + size as u64 {
+            for tag in read_tags(reader, Endian::Little, true)? {
+                tags.push(tag);
+            }
+        }
     } else {
+        let mut attributes = Vec::new();
         while reader.stream_position()? < position + size as u64 {
             attributes.push(read_attribute(reader, e)?);
         }
+        tags.push(Tag { key: position as u32, kind: tag, is_erased, is_erased_parent: false, attributes });
     }
-    Ok(Tag { key: position as u32, kind: tag, attributes })
+    Ok(tags)
 }
 
 // TODO Shift-JIS?
@@ -554,8 +608,8 @@ where R: BufRead + Seek + ?Sized {
     let attr = AttributeKind::try_from(attr_type).context("Unknown DWARF attribute type")?;
     let form = FormKind::try_from(attr_type & FORM_MASK).context("Unknown DWARF form type")?;
     let value = match form {
-        FormKind::Addr => AttributeValue::Address(u32::from_reader(reader, e)?),
-        FormKind::Ref => AttributeValue::Reference(u32::from_reader(reader, e)?),
+        FormKind::Addr => AttributeValue::Address(u32::from_reader(reader, Endian::Big)?),
+        FormKind::Ref => AttributeValue::Reference(u32::from_reader(reader, Endian::Big)?),
         FormKind::Block2 => {
             let size = u16::from_reader(reader, e)?;
             let mut data = vec![0u8; size as usize];
@@ -875,7 +929,7 @@ pub struct Type {
 
 impl Type {
     pub fn size(&self, info: &DwarfInfo) -> Result<u32> {
-        if self.modifiers.iter().any(|m| matches!(m, Modifier::PointerTo | Modifier::ReferenceTo)) {
+        if self.modifiers.iter().any(|m| matches!(m, Modifier::MwPointerTo | Modifier::PointerTo | Modifier::ReferenceTo)) {
             return Ok(4);
         }
         match self.kind {
@@ -896,7 +950,7 @@ pub fn apply_modifiers(mut str: TypeString, modifiers: &[Modifier]) -> Result<Ty
     let mut has_pointer = false;
     for &modifier in modifiers.iter().rev() {
         match modifier {
-            Modifier::PointerTo => {
+            Modifier::MwPointerTo | Modifier::PointerTo => {
                 if !has_pointer && !str.suffix.is_empty() {
                     if str.member.is_empty() {
                         str.prefix.push_str(" (*");
@@ -1128,13 +1182,13 @@ fn ptr_to_member_type_string(
     })
 }
 
-pub fn ud_type_def(info: &DwarfInfo, typedefs: &TypedefMap, t: &UserDefinedType) -> Result<String> {
+pub fn ud_type_def(info: &DwarfInfo, typedefs: &TypedefMap, t: &UserDefinedType, is_erased: bool) -> Result<String> {
     match t {
         UserDefinedType::Array(t) => {
             let ts = array_type_string(info, typedefs, t, false)?;
             Ok(format!("// Array: {}{}", ts.prefix, ts.suffix))
         }
-        UserDefinedType::Subroutine(t) => Ok(subroutine_def_string(info, typedefs, t)?),
+        UserDefinedType::Subroutine(t) => Ok(subroutine_def_string(info, typedefs, t, is_erased)?),
         UserDefinedType::Structure(t) => Ok(struct_def_string(info, typedefs, t)?),
         UserDefinedType::Enumeration(t) => Ok(enum_def_string(t)?),
         UserDefinedType::Union(t) => Ok(union_def_string(info, typedefs, t)?),
@@ -1195,9 +1249,12 @@ pub fn subroutine_def_string(
     info: &DwarfInfo,
     typedefs: &TypedefMap,
     t: &SubroutineType,
+    is_erased: bool,
 ) -> Result<String> {
     let mut out = String::new();
-    if let (Some(start), Some(end)) = (t.start_address, t.end_address) {
+    if is_erased {
+        out.push_str("// Erased\n");
+    } else if let (Some(start), Some(end)) = (t.start_address, t.end_address) {
         writeln!(out, "// Range: {:#X} -> {:#X}", start, end)?;
     }
     let rt = type_string(info, typedefs, &t.return_type, true)?;
@@ -1297,7 +1354,7 @@ pub fn subroutine_def_string(
                 continue;
             }
             let variable = process_variable_tag(info, tag)?;
-            writeln!(out, "    // -> {}", variable_string(info, typedefs, &variable, false)?)?;
+            writeln!(out, "    // -> {}", variable_string(info, typedefs, &variable, false, tag.is_erased)?)?;
         }
     }
 
@@ -2327,7 +2384,7 @@ fn process_subroutine_parameter_tag(info: &DwarfInfo, tag: &Tag) -> Result<Subro
                 _,
             ) => kind = Some(process_type(attr, info.e)?),
             (AttributeKind::Location, AttributeValue::Block(block)) => {
-                location = Some(process_variable_location(block, info.e)?)
+                location = Some(process_variable_location(block, if tag.is_erased { Endian::Little } else { info.e })?)
             }
             (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
                 // TODO?
@@ -2377,7 +2434,7 @@ fn process_local_variable_tag(info: &DwarfInfo, tag: &Tag) -> Result<SubroutineV
             ) => kind = Some(process_type(attr, info.e)?),
             (AttributeKind::Location, AttributeValue::Block(block)) => {
                 if !block.is_empty() {
-                    location = Some(process_variable_location(block, info.e)?);
+                    location = Some(process_variable_location(block, if tag.is_erased { Endian::Little } else { info.e })?);
                 }
             }
             (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
@@ -2466,7 +2523,7 @@ pub fn ud_type(info: &DwarfInfo, tag: &Tag) -> Result<UserDefinedType> {
 pub fn process_modifiers(block: &[u8]) -> Result<Vec<Modifier>> {
     let mut out = Vec::with_capacity(block.len());
     for &b in block {
-        out.push(Modifier::try_from(b)?);
+        out.push(Modifier::parse_int(b)?);
     }
     Ok(out)
 }
@@ -2474,14 +2531,14 @@ pub fn process_modifiers(block: &[u8]) -> Result<Vec<Modifier>> {
 pub fn process_type(attr: &Attribute, e: Endian) -> Result<Type> {
     match (attr.kind, &attr.value) {
         (AttributeKind::FundType, &AttributeValue::Data2(type_id)) => {
-            let fund_type = FundType::try_from(type_id)
-                .with_context(|| format!("Invalid fundamental type ID '{}'", type_id))?;
+            let fund_type = FundType::parse_int(type_id)
+                .with_context(|| format!("Invalid fundamental type ID '{:04X}'", type_id))?;
             Ok(Type { kind: TypeKind::Fundamental(fund_type), modifiers: vec![] })
         }
         (AttributeKind::ModFundType, AttributeValue::Block(ops)) => {
             let type_id = u16::from_bytes(ops[ops.len() - 2..].try_into()?, e);
-            let fund_type = FundType::try_from(type_id)
-                .with_context(|| format!("Invalid fundamental type ID '{}'", type_id))?;
+            let fund_type = FundType::parse_int(type_id)
+                .with_context(|| format!("Invalid fundamental type ID '{:04X}'", type_id))?;
             let modifiers = process_modifiers(&ops[..ops.len() - 2])?;
             Ok(Type { kind: TypeKind::Fundamental(fund_type), modifiers })
         }
@@ -2577,9 +2634,9 @@ pub fn process_cu_tag(info: &DwarfInfo, tag: &Tag) -> Result<TagType> {
 }
 
 /// Logic to skip uninteresting tags
-pub fn should_skip_tag(tag_type: &TagType) -> bool {
+pub fn should_skip_tag(tag_type: &TagType, is_erased: bool) -> bool {
     match tag_type {
-        TagType::Variable(_) => false,
+        TagType::Variable(_) => is_erased,
         TagType::Typedef(_) => false,
         TagType::UserDefined(t) => !t.is_definition(),
     }
@@ -2589,12 +2646,13 @@ pub fn tag_type_string(
     info: &DwarfInfo,
     typedefs: &TypedefMap,
     tag_type: &TagType,
+    is_erased: bool,
 ) -> Result<String> {
     match tag_type {
         TagType::Typedef(t) => typedef_string(info, typedefs, t),
-        TagType::Variable(v) => variable_string(info, typedefs, v, true),
+        TagType::Variable(v) => variable_string(info, typedefs, v, true, is_erased),
         TagType::UserDefined(ud) => {
-            let ud_str = ud_type_def(info, typedefs, ud)?;
+            let ud_str = ud_type_def(info, typedefs, ud, is_erased)?;
             match ud {
                 UserDefinedType::Structure(_)
                 | UserDefinedType::Enumeration(_)
@@ -2615,16 +2673,21 @@ fn variable_string(
     typedefs: &TypedefMap,
     variable: &VariableTag,
     include_extra: bool,
+    is_erased: bool,
 ) -> Result<String> {
     let ts = type_string(info, typedefs, &variable.kind, include_extra)?;
     let mut out = String::new();
     if include_extra {
-        let size = variable.kind.size(info)?;
-        out.push_str(&format!("// size = {:#X}", size));
-        if let Some(addr) = variable.address {
-            out.push_str(&format!(", address = {:#X}", addr));
+        if is_erased {
+            out.push_str("// Erased\n");
+        } else {
+            let size = variable.kind.size(info)?;
+            out.push_str(&format!("// size = {:#X}", size));
+            if let Some(addr) = variable.address {
+                out.push_str(&format!(", address = {:#X}", addr));
+            }
+            out.push('\n');
         }
-        out.push('\n');
     }
     if variable.local {
        out.push_str("static ");

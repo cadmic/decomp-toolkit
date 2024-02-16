@@ -129,30 +129,48 @@ fn dump_debug_section(
                     writeln!(w)?;
                     writeln!(w, "#include \"types.h\"")?;
 
-                    let children = tag.children(&info.tags);
+                    let mut children = tag.children(&info.tags);
+
+                    // merge in erased tags
+                    let next_sibling = tag.next_sibling(&info.tags);
+                    for (_, child) in &info.tags {
+                        if child.key < tag.key {
+                            continue;
+                        }
+                        if let Some(next) = next_sibling {
+                            if child.key >= next.key {
+                                break;
+                            }
+                        }
+                        if child.is_erased_parent {
+                            children.push(child);
+                        }
+                    }
+                    children.sort_by_key(|x| x.key);
+
                     let mut typedefs = BTreeMap::<u32, Vec<u32>>::new();
                     for child in children {
                         let tag_type = match process_cu_tag(&info, child) {
                             Ok(tag_type) => tag_type,
                             Err(e) => {
                                 log::error!(
-                                    "Failed to process tag {} (unit {}): {}",
+                                    "Failed to process tag {:X} (unit {}): {}",
                                     child.key,
                                     unit.name,
                                     e
                                 );
                                 writeln!(
                                     w,
-                                    "// ERROR: Failed to process tag {} ({:?})",
+                                    "// ERROR: Failed to process tag {:X} ({:?})",
                                     child.key, child.kind
                                 )?;
                                 continue;
                             }
                         };
-                        if should_skip_tag(&tag_type) {
+                        if should_skip_tag(&tag_type, child.is_erased) {
                             continue;
                         }
-                        match tag_type_string(&info, &typedefs, &tag_type) {
+                        match tag_type_string(&info, &typedefs, &tag_type, child.is_erased) {
                             Ok(s) => writeln!(w, "{}", s)?,
                             Err(e) => {
                                 log::error!(
