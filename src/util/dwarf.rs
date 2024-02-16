@@ -1039,7 +1039,7 @@ fn array_type_string(
 fn type_identifier(name: &Option<String>, key: u32) -> String {
     match name {
         Some(name) => name.clone(),
-        None => format!("__anon_0x{:X}", key),
+        None => format!("__anon_{:#X}", key),
     }
 }
 
@@ -1515,9 +1515,10 @@ pub fn struct_def_string(
         }
     }
     out.push_str(" {\n");
-    if let Some(byte_size) = t.byte_size {
-        writeln!(out, "    // total size: {:#X}", byte_size)?;
-    }
+
+    let max_offset = t.members.iter().map(|m| m.offset).max().unwrap_or_default();
+    let offset_len = format!("{:X}", max_offset).len();
+
     let mut vis = match t.kind {
         StructureKind::Struct => Visibility::Public,
         StructureKind::Class => Visibility::Private,
@@ -1572,12 +1573,11 @@ pub fn struct_def_string(
         }
         let mut var_out = String::new();
         let ts = type_string(info, typedefs, &member.kind, true)?;
-        write!(var_out, "{} {}{}", ts.prefix, member.name, ts.suffix)?;
+        write!(var_out, "/* 0x{:0offset_len$X} */ {} {}{}", member.offset, ts.prefix, member.name, ts.suffix)?;
         if let Some(bit) = &member.bit {
             write!(var_out, " : {}", bit.bit_size)?;
         }
-        let size = if let Some(size) = member.byte_size { size } else { member.kind.size(info)? };
-        writeln!(var_out, "; // offset {:#X}, size {:#X}", member.offset, size)?;
+        writeln!(var_out, ";")?;
         out.push_str(&indent_all_by(indent, var_out));
     }
     while in_group > 0 {
@@ -1591,6 +1591,10 @@ pub fn struct_def_string(
         in_union -= 1;
     }
     out.push('}');
+    out.push(';');
+    if let Some(byte_size) = t.byte_size {
+        write!(out, " // size = {:#X}", byte_size)?;
+    }
     Ok(out)
 }
 
@@ -1600,23 +1604,25 @@ pub fn enum_def_string(t: &EnumerationType) -> Result<String> {
     for member in t.members.iter() {
         writeln!(out, "    {} = {},", member.name, member.value)?;
     }
-    write!(out, "}}")?;
+    write!(out, "}};")?;
     Ok(out)
 }
 
 pub fn union_def_string(info: &DwarfInfo, typedefs: &TypedefMap, t: &UnionType) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "union {} {{", type_identifier(&t.name, t.key))?;
+
+    let max_offset = t.members.iter().map(|m| m.offset).max().unwrap_or_default();
+    let offset_len = format!("{:X}", max_offset).len();
+
     let mut var_out = String::new();
     for member in t.members.iter() {
         let ts = type_string(info, typedefs, &member.kind, true)?;
-        write!(var_out, "{} {}{};", ts.prefix, member.name, ts.suffix)?;
-        let size = if let Some(size) = member.byte_size { size } else { member.kind.size(info)? };
-        write!(var_out, " // offset {:#X}, size {:#X}", member.offset, size)?;
+        write!(var_out, "/* 0x{:0offset_len$X} */ {} {}{};", member.offset, ts.prefix, member.name, ts.suffix)?;
         writeln!(var_out)?;
     }
     write!(out, "{}", indent_all_by(4, var_out))?;
-    write!(out, "}}")?;
+    write!(out, "}};")?;
     Ok(out)
 }
 
@@ -2592,7 +2598,7 @@ pub fn tag_type_string(
             match ud {
                 UserDefinedType::Structure(_)
                 | UserDefinedType::Enumeration(_)
-                | UserDefinedType::Union(_) => Ok(format!("{};", ud_str)),
+                | UserDefinedType::Union(_) => Ok(ud_str),
                 _ => Ok(ud_str),
             }
         }
@@ -2611,19 +2617,23 @@ fn variable_string(
     include_extra: bool,
 ) -> Result<String> {
     let ts = type_string(info, typedefs, &variable.kind, include_extra)?;
-    let mut out = if variable.local { "static ".to_string() } else { String::new() };
+    let mut out = String::new();
+    if include_extra {
+        let size = variable.kind.size(info)?;
+        out.push_str(&format!("// size = {:#X}", size));
+        if let Some(addr) = variable.address {
+            out.push_str(&format!(", address = {:#X}", addr));
+        }
+        out.push('\n');
+    }
+    if variable.local {
+       out.push_str("static ");
+    }
     out.push_str(&ts.prefix);
     out.push(' ');
     out.push_str(variable.name.as_deref().unwrap_or("[unknown]"));
     out.push_str(&ts.suffix);
     out.push(';');
-    if include_extra {
-        let size = variable.kind.size(info)?;
-        out.push_str(&format!(" // size: {:#X}", size));
-        if let Some(addr) = variable.address {
-            out.push_str(&format!(", address: {:#X}", addr));
-        }
-    }
     Ok(out)
 }
 
