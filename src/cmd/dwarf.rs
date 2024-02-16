@@ -171,7 +171,7 @@ fn dump_debug_section(
                             continue;
                         }
                         match tag_type_string(&info, &typedefs, &tag_type, child.is_erased) {
-                            Ok(s) => writeln!(w, "{}", s)?,
+                            Ok(s) => writeln!(w, "\n{}", s)?,
                             Err(e) => {
                                 log::error!(
                                     "Failed to emit tag {} (unit {}): {}",

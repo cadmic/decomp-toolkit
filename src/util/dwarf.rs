@@ -1391,7 +1391,7 @@ pub fn subroutine_def_string(
         }
     }
 
-    writeln!(out, "}}")?;
+    write!(out, "}}")?;
     Ok(out)
 }
 
