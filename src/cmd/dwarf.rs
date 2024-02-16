@@ -126,6 +126,9 @@ fn dump_debug_section(
                         writeln!(w, "    Code range: {:#010X} -> {:#010X}", start, end)?;
                     }
                     writeln!(w, "*/")?;
+                    writeln!(w)?;
+                    writeln!(w, "#include \"types.h\"")?;
+                    writeln!(w)?;
 
                     let children = tag.children(&info.tags);
                     let mut typedefs = BTreeMap::<u32, Vec<u32>>::new();
@@ -151,7 +154,7 @@ fn dump_debug_section(
                             continue;
                         }
                         match tag_type_string(&info, &typedefs, &tag_type) {
-                            Ok(s) => writeln!(w, "\n{}", s)?,
+                            Ok(s) => writeln!(w, "{}", s)?,
                             Err(e) => {
                                 log::error!(
                                     "Failed to emit tag {} (unit {}): {}",

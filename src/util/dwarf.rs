@@ -123,18 +123,18 @@ impl FundType {
         Ok(match self {
             FundType::WideChar => "wchar_t",
             FundType::Char => "char",
-            FundType::SignedChar => "signed char",
-            FundType::UnsignedChar => "unsigned char",
-            FundType::Short => "short",
-            FundType::SignedShort => "signed short",
-            FundType::UnsignedShort => "unsigned short",
-            FundType::Integer => "int",
-            FundType::SignedInteger => "signed int",
-            FundType::UnsignedInteger => "unsigned int",
-            FundType::Long => "long",
-            FundType::SignedLong => "signed long",
-            FundType::UnsignedLong => "unsigned long",
-            FundType::Pointer => "void *",
+            FundType::SignedChar => "s8",
+            FundType::UnsignedChar => "u8",
+            FundType::Short => "s16",
+            FundType::SignedShort => "s16",
+            FundType::UnsignedShort => "u16",
+            FundType::Integer => "s32",
+            FundType::SignedInteger => "s32",
+            FundType::UnsignedInteger => "u32",
+            FundType::Long => "s32",
+            FundType::SignedLong => "s32",
+            FundType::UnsignedLong => "u32",
+            FundType::Pointer => "void*",
             FundType::Float => "float",
             FundType::DblPrecFloat => "double",
             FundType::ExtPrecFloat => "long double",
@@ -144,9 +144,9 @@ impl FundType {
             | FundType::DblPrecComplex
             | FundType::ExtPrecComplex
             | FundType::Label => bail!("Unhandled fundamental type {self:?}"),
-            FundType::LongLong => "long long",
-            FundType::SignedLongLong => "signed long long",
-            FundType::UnsignedLongLong => "unsigned long long",
+            FundType::LongLong => "s64",
+            FundType::SignedLongLong => "s64",
+            FundType::UnsignedLongLong => "u64",
             FundType::Int128 => "__int128",
             FundType::Vec2x32Float => "__vec2x32float__",
         })
@@ -904,7 +904,7 @@ pub fn apply_modifiers(mut str: TypeString, modifiers: &[Modifier]) -> Result<Ty
                     }
                     str.suffix.insert(0, ')');
                 } else {
-                    str.prefix.push_str(" *");
+                    str.prefix.push_str("*");
                 }
                 has_pointer = true;
             }
