@@ -148,8 +148,23 @@ fn dump_debug_section(
                     }
                     children.sort_by_key(|x| x.key);
 
+                    // Move functions to the end and reverse order
+                    let mut functions = Vec::new();
+                    let mut other = Vec::new();
+                    for child in &children {
+                        if child.kind == TagKind::Subroutine || child.kind == TagKind::GlobalSubroutine {
+                            functions.push(child);
+                        } else {
+                            other.push(child);
+                        }
+                    }
+
+                    let mut items = Vec::new();
+                    items.extend(other);
+                    items.extend(functions.into_iter().rev());
+
                     let mut typedefs = BTreeMap::<u32, Vec<u32>>::new();
-                    for child in children {
+                    for child in items {
                         let tag_type = match process_cu_tag(&info, child) {
                             Ok(tag_type) => tag_type,
                             Err(e) => {
