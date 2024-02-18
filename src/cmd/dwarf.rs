@@ -127,7 +127,7 @@ fn dump_debug_section(
                     }
                     writeln!(w, "*/")?;
                     writeln!(w)?;
-                    writeln!(w, "#include \"types.h\"")?;
+                    writeln!(w, "#include \"dolphin/types.h\"")?;
 
                     let mut children = tag.children(&info.tags);
 
